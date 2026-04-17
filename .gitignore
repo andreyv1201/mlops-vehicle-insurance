@@ -1,0 +1,9 @@
+data/*.csv
+models/*.pkl
+reports/*.png
+reports/*.csv
+__pycache__/
+*.pyc
+.venv/
+mlruns/
+.github/workflows/
