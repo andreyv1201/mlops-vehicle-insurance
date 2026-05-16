@@ -9,6 +9,12 @@ MLOps MVP для задачи регрессии страховой премии
 - `main.py` — классический end-to-end pipeline: загрузка данных, EDA, подготовка признаков, обучение нескольких моделей, валидация и сохранение артефактов.
 - `run.py` — MVP pipeline с режимами `update`, `inference`, `summary` и версионированием моделей через реестр.
 - `src/serve.py` — Flask API для инференса после обучения модели.
+- `doc/` — документация для проверки задания 2: ожидаемые баллы и описание задачи.
+
+## Документация
+
+- [Ожидаемые баллы и статусы реализации](doc/grade.md)
+- [Описание задачи, данных и ML pipeline](doc/task.md)
 
 ## Установка
 
@@ -93,6 +99,10 @@ src/
     validate.py              кросс-валидация и latency-check
     mvp_pipeline.py          update / inference / summary + model registry
     serve.py                 Flask API для инференса
+
+doc/
+    grade.md                 ожидаемые баллы и статусы реализации
+    task.md                  описание задачи, данных и ML pipeline
 
 artifacts/
     state.json               состояние обработки батчей
