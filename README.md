@@ -141,3 +141,84 @@ reports/
 5. Обучает набор моделей и выбирает лучшую.
 6. Сохраняет новую версию модели в `models/model_vXXX.joblib`.
 7. Обновляет `models/registry.json`.
+
+## CI/CD workflow для задания 2
+
+Для задания 2 проект доработан как продолжение MVP из задания 1. Выбран сценарий
+**CRON-инкрементального обучения**, потому что в `run.py --mode update` уже есть
+потоковая обработка батчей, состояние чтения данных, накопление `raw_store/` и
+реестр версий моделей.
+
+Workflow находится в `.github/workflows/mlops-ci.yml` и выполняет обязательные
+части задания:
+
+- запускается автоматически при `push` и `pull_request`;
+- устанавливает окружение через `actions/setup-python` и `pip install -r requirements.txt`;
+- запускает тесты ML-системы через `pytest`;
+- выполняет обучение модели командой `python run.py --mode update`;
+- сохраняет лог обучения `artifacts/training.log`;
+- публикует артефакты GitHub Actions: лог, реестр моделей, сериализованную модель,
+  состояние сборщика данных и summary-отчет.
+
+Дополнительно workflow поддерживает запуск по расписанию:
+
+```yaml
+schedule:
+  - cron: "0 6 * * 1"
+```
+
+При scheduled-запуске используется `actions/cache`: директории `artifacts/`,
+`raw_store/`, `models/` и `reports/` восстанавливаются из предыдущего запуска и
+сохраняются после нового обучения. Поэтому каждый CRON-запуск продолжает обработку
+следующего батча, а не начинает pipeline с нуля.
+
+### Управление обучением из YAML
+
+В workflow параметры обучения задаются через переменные окружения:
+
+```yaml
+MLOPS_BATCH_SIZE: "150"
+MLOPS_BATCHES_PER_UPDATE: "1"
+MLOPS_MODEL_CANDIDATES: "LinearRegression,DecisionTree,RandomForest"
+MLOPS_RANDOM_FOREST_ESTIMATORS: "30"
+```
+
+Эти же параметры можно передать локально:
+
+```bash
+python run.py --mode update \
+  --batch-size 150 \
+  --batches-per-update 1 \
+  --model-candidates LinearRegression,DecisionTree,RandomForest \
+  --random-forest-estimators 30
+```
+
+### Развертывание на GitHub Actions
+
+1. Убедиться, что в репозитории есть файлы:
+   `README.md`, `requirements.txt`, `.github/workflows/mlops-ci.yml`, `run.py`,
+   `src/`, `scripts/` и `tests/`.
+2. Загрузить проект в GitHub-репозиторий.
+3. Вкладка **Actions** автоматически покажет workflow `MLOps CI/CD`.
+4. Сделать `push` или открыть `pull request`: workflow установит зависимости,
+   выполнит тесты, обучит модель и сохранит артефакты.
+5. Для ручного запуска открыть **Actions -> MLOps CI/CD -> Run workflow** и при
+   необходимости изменить `batch_size`, `batches_per_update` или список моделей.
+6. После успешного запуска открыть run workflow и скачать архив
+   `mlops-training-artifacts-*`.
+
+Если исходные CSV-файлы не загружены в GitHub из-за размера или приватности данных,
+workflow автоматически создает небольшой синтетический датасет командой
+`python scripts/generate_sample_data.py`. Это позволяет проверяющему воспроизвести
+установку окружения, тестирование, обучение и сохранение артефактов без локальных
+файлов `data/*.csv`. При наличии реальных CSV в репозитории pipeline использует их.
+
+### Состав артефактов CI/CD
+
+- `artifacts/training.log` — текстовый лог обучения модели;
+- `models/model_vXXX.joblib` — сериализованная модель, которую можно загрузить через `joblib`;
+- `models/registry.json` — история версий моделей, метрик и гиперпараметров;
+- `artifacts/data_collector_state.joblib` — сериализованное состояние сборщика батчей;
+- `artifacts/state.json`, `artifacts/data_meta.jsonl`, `artifacts/data_quality.jsonl` —
+  состояние потока данных и контроль качества;
+- `reports/summary_latest.json` — dashboard-like summary истории обучения в JSON.

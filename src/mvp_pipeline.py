@@ -1,7 +1,7 @@
 import json
 import time
 from dataclasses import dataclass
-from datetime import datetime, UTC
+from datetime import datetime, timezone
 from pathlib import Path
 
 import joblib
@@ -25,6 +25,8 @@ class Config:
     batch_size: int = 20000
     batches_per_update: int = 1
     min_quality_non_null_ratio: float = 0.6
+    model_candidates: tuple[str, ...] = ("LinearRegression", "KNN", "DecisionTree", "RandomForest", "XGBoost", "CatBoost")
+    random_forest_estimators: int = 200
     artifacts_dir: str = "artifacts"
     raw_store_dir: str = "raw_store"
     models_dir: str = "models"
@@ -42,13 +44,14 @@ class MVPPipeline:
         self.state_path = self.artifacts_dir / "state.json"
         self.meta_path = self.artifacts_dir / "data_meta.jsonl"
         self.quality_log_path = self.artifacts_dir / "data_quality.jsonl"
+        self.collector_state_path = self.artifacts_dir / "data_collector_state.joblib"
         self.registry_path = self.models_dir / "registry.json"
 
         for d in (self.artifacts_dir, self.raw_store_dir, self.models_dir, self.reports_dir):
             d.mkdir(parents=True, exist_ok=True)
 
     def _utc_now(self) -> str:
-        return datetime.now(UTC).isoformat()
+        return datetime.now(timezone.utc).isoformat()
 
     def _read_state(self) -> dict:
         if not self.state_path.exists():
@@ -57,6 +60,16 @@ class MVPPipeline:
 
     def _write_state(self, state: dict) -> None:
         self.state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        joblib.dump(
+            {
+                "state": state,
+                "data_files": self.cfg.data_files,
+                "batch_size": self.cfg.batch_size,
+                "batches_per_update": self.cfg.batches_per_update,
+                "updated_at_utc": self._utc_now(),
+            },
+            self.collector_state_path,
+        )
 
     def _append_jsonl(self, path: Path, payload: dict) -> None:
         with path.open("a", encoding="utf-8") as f:
@@ -147,40 +160,51 @@ class MVPPipeline:
         return cleaned, quality
 
     def _build_models(self) -> dict[str, object]:
-        models: dict[str, object] = {
-            "LinearRegression": LinearRegression(),
-            "KNN": KNeighborsRegressor(n_neighbors=7, weights="distance"),
-            "DecisionTree": DecisionTreeRegressor(max_depth=12, min_samples_leaf=20, random_state=42),
-            "RandomForest": RandomForestRegressor(
-                n_estimators=200, max_depth=12, n_jobs=-1, random_state=42
-            ),
-        }
-        try:
-            from xgboost import XGBRegressor
+        requested = set(self.cfg.model_candidates)
+        models: dict[str, object] = {}
 
-            models["XGBoost"] = XGBRegressor(
-                n_estimators=300,
-                max_depth=8,
-                learning_rate=0.1,
-                n_jobs=-1,
-                random_state=42,
-                verbosity=0,
+        if "LinearRegression" in requested:
+            models["LinearRegression"] = LinearRegression()
+        if "KNN" in requested:
+            models["KNN"] = KNeighborsRegressor(n_neighbors=7, weights="distance")
+        if "DecisionTree" in requested:
+            models["DecisionTree"] = DecisionTreeRegressor(max_depth=12, min_samples_leaf=20, random_state=42)
+        if "RandomForest" in requested:
+            models["RandomForest"] = RandomForestRegressor(
+                n_estimators=self.cfg.random_forest_estimators, max_depth=12, n_jobs=-1, random_state=42
             )
-        except Exception:
-            pass
 
-        try:
-            from catboost import CatBoostRegressor
+        if "XGBoost" in requested:
+            try:
+                from xgboost import XGBRegressor
 
-            models["CatBoost"] = CatBoostRegressor(
-                iterations=300,
-                depth=8,
-                learning_rate=0.1,
-                random_seed=42,
-                verbose=0,
-            )
-        except Exception:
-            pass
+                models["XGBoost"] = XGBRegressor(
+                    n_estimators=300,
+                    max_depth=8,
+                    learning_rate=0.1,
+                    n_jobs=-1,
+                    random_state=42,
+                    verbosity=0,
+                )
+            except Exception:
+                pass
+
+        if "CatBoost" in requested:
+            try:
+                from catboost import CatBoostRegressor
+
+                models["CatBoost"] = CatBoostRegressor(
+                    iterations=300,
+                    depth=8,
+                    learning_rate=0.1,
+                    random_seed=42,
+                    verbose=0,
+                )
+            except Exception:
+                pass
+
+        if not models:
+            raise ValueError("No trainable models were configured.")
         return models
 
     def _build_preprocessor(self, X: pd.DataFrame) -> ColumnTransformer:

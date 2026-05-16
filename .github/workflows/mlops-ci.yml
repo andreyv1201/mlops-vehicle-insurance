@@ -1,0 +1,132 @@
+name: MLOps CI/CD
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+  workflow_dispatch:
+    inputs:
+      batch_size:
+        description: "Rows in one streaming batch"
+        required: false
+        default: "150"
+      batches_per_update:
+        description: "Number of batches processed in one run"
+        required: false
+        default: "1"
+      model_candidates:
+        description: "Comma-separated model list"
+        required: false
+        default: "LinearRegression,DecisionTree,RandomForest"
+  schedule:
+    - cron: "0 6 * * 1"
+
+jobs:
+  train-and-package:
+    runs-on: ubuntu-latest
+    env:
+      MLOPS_BATCH_SIZE: ${{ github.event.inputs.batch_size || '150' }}
+      MLOPS_BATCHES_PER_UPDATE: ${{ github.event.inputs.batches_per_update || '1' }}
+      MLOPS_MODEL_CANDIDATES: ${{ github.event.inputs.model_candidates || 'LinearRegression,DecisionTree,RandomForest' }}
+      MLOPS_RANDOM_FOREST_ESTIMATORS: "30"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Restore incremental training state
+        if: github.event_name == 'schedule'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            artifacts
+            raw_store
+            models
+            reports
+          key: mlops-state-${{ github.run_id }}
+          restore-keys: |
+            mlops-state-
+
+      - name: Prepare CI sample data
+        run: |
+          if [ ! -f data/motor_data11-14lats.csv ] || [ ! -f data/motor_data14-2018.csv ]; then
+            python scripts/generate_sample_data.py --output-dir data --rows-per-file 5000
+          fi
+
+      - name: Reset runtime state for push and pull request checks
+        if: github.event_name != 'schedule'
+        run: |
+          rm -rf artifacts raw_store models reports
+          mkdir -p artifacts raw_store models reports
+
+      - name: Run tests
+        run: pytest -q
+
+      - name: Train model on next streaming batch
+        run: |
+          mkdir -p artifacts
+          set -o pipefail
+          python run.py --mode update 2>&1 | tee artifacts/training.log
+
+      - name: Build training summary
+        run: python run.py --mode summary
+
+      - name: Validate produced artifacts
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          registry_path = Path("models/registry.json")
+          log_path = Path("artifacts/training.log")
+          collector_path = Path("artifacts/data_collector_state.joblib")
+
+          assert log_path.exists() and log_path.stat().st_size > 0, "training log was not saved"
+          assert registry_path.exists(), "model registry was not saved"
+          assert collector_path.exists(), "serialized data collector state was not saved"
+
+          registry = json.loads(registry_path.read_text(encoding="utf-8"))
+          assert registry, "model registry is empty"
+          model_path = Path(registry[-1]["model_path"])
+          assert model_path.exists(), f"serialized model does not exist: {model_path}"
+          print(f"Validated model artifact: {model_path}")
+          PY
+
+      - name: Upload training artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlops-training-artifacts-${{ github.run_number }}
+          path: |
+            artifacts/training.log
+            artifacts/data_meta.jsonl
+            artifacts/data_quality.jsonl
+            artifacts/state.json
+            artifacts/data_collector_state.joblib
+            models/registry.json
+            models/*.joblib
+            reports/summary_latest.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Save incremental training state
+        if: github.event_name == 'schedule'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            artifacts
+            raw_store
+            models
+            reports
+          key: mlops-state-${{ github.run_id }}

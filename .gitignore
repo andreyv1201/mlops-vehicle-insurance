@@ -1,9 +1,12 @@
 data/*.csv
 models/*.pkl
+models/*.joblib
+models/registry.json
 reports/*.png
 reports/*.csv
+reports/*.json
+raw_store/
 __pycache__/
 *.pyc
 .venv/
 mlruns/
-.github/workflows/
